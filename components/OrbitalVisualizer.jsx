@@ -5,6 +5,7 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text } from '@react-three/drei';
 import * as THREE from 'three';
 
+// -------------------- orbital colors --------------------
 const ORBITAL_COLORS = {
   s: '#3b82f6',
   p: '#ef4444',
@@ -12,6 +13,7 @@ const ORBITAL_COLORS = {
   f: '#a855f7',
 };
 
+// -------------------- math helpers --------------------
 const factorialCache = new Array(20).fill(0);
 factorialCache[0] = 1;
 function factorial(n) {
@@ -19,6 +21,18 @@ function factorial(n) {
   if (factorialCache[n]) return factorialCache[n];
   return (factorialCache[n] = n * factorial(n - 1));
 }
+
+// -------------------- helper: random position inside sphere --------------------
+function randomInSphere(radius) {
+  let x, y, z;
+  do {
+    x = Math.random() * 2 - 1;
+    y = Math.random() * 2 - 1;
+    z = Math.random() * 2 - 1;
+  } while (x * x + y * y + z * z > 1); // only points inside unit sphere
+  return [x * radius, y * radius, z * radius];
+}
+
 
 function binomial(n, k) {
   if (k < 0 || k > n) return 0;
@@ -35,14 +49,6 @@ function generalizedLaguerre(n, alpha, x) {
   return result;
 }
 
-function legendre(l, x) {
-  if (l === 0) return 1;
-  if (l === 1) return x;
-  if (l === 2) return (3 * x * x - 1) / 2;
-  if (l === 3) return (5 * x * x * x - 3 * x) / 2;
-  return 0;
-}
-
 function radial(n, l, r, Z = 1) {
   const rho = (2 * Z * r) / n;
   const norm = Math.sqrt(Math.pow(2 * Z / n, 3) * factorial(n - l - 1) / (2 * n * factorial(n + l)));
@@ -52,22 +58,41 @@ function radial(n, l, r, Z = 1) {
 
 // -------------------- nucleus --------------------
 function Nucleus({ protons, neutrons }) {
-  const meshRef = useRef();
+  const groupRef = useRef();
+  const radius = Math.cbrt(protons + neutrons) * 0.2; // radius of nucleus cluster
+  const particleSize = 0.1;
+
+  const particles = useMemo(() => {
+    const arr = [];
+    for (let i = 0; i < protons; i++) {
+      const pos = randomInSphere(radius);
+      arr.push({ type: 'p', position: pos });
+    }
+    for (let i = 0; i < neutrons; i++) {
+      const pos = randomInSphere(radius);
+      arr.push({ type: 'n', position: pos });
+    }
+    return arr;
+  }, [protons, neutrons, radius]);
 
   useFrame((state) => {
-    if (meshRef.current) meshRef.current.rotation.y = state.clock.elapsedTime * 0.5;
+    if (groupRef.current) groupRef.current.rotation.y = state.clock.elapsedTime * 0.5;
   });
 
-  const nucleusSize = Math.pow(protons + neutrons, 1 / 3) * 0.3;
-
   return (
-    <group ref={meshRef}>
-      <mesh>
-        <sphereGeometry args={[nucleusSize, 32, 32]} />
-        <meshStandardMaterial color="#4ade80" emissive="#22c55e" emissiveIntensity={0.3} />
-      </mesh>
+    <group ref={groupRef}>
+      {particles.map((particle, idx) => (
+        <mesh key={idx} position={particle.position}>
+          <sphereGeometry args={[particleSize, 16, 16]} />
+          <meshStandardMaterial
+            color={particle.type === 'p' ? '#ef4444' : '#3b82f6'}
+            emissive={particle.type === 'p' ? '#f87171' : '#60a5fa'}
+            emissiveIntensity={0.3}
+          />
+        </mesh>
+      ))}
       <Text
-        position={[0, 0, nucleusSize + 0.3]}
+        position={[0, radius + 0.3, 0]}
         fontSize={0.3}
         color="white"
         anchorX="center"
@@ -79,6 +104,7 @@ function Nucleus({ protons, neutrons }) {
   );
 }
 
+
 // -------------------- orbital shell --------------------
 function OrbitalShell({ shell, subshell, electrons, maxElectrons }) {
   const groupRef = useRef();
@@ -87,21 +113,23 @@ function OrbitalShell({ shell, subshell, electrons, maxElectrons }) {
   const n = shell;
   const color = ORBITAL_COLORS[subshell] || '#888888';
 
+  // define rMax here so it can be used for both points and text
+  const rMax = 1.5 + (n - 1) * 2.0;
+
   useFrame((state) => {
-    if (groupRef.current) groupRef.current.rotation.y = state.clock.elapsedTime * (0.2 / shell);
+    if (groupRef.current)
+      groupRef.current.rotation.y = state.clock.elapsedTime * (0.1 + 0.05 / shell);
   });
 
-  // Generate points
   const positions = useMemo(() => {
-    const numPoints = Math.floor(60000 * (electrons / maxElectrons)); // Increased from 30000 to 60000
+    const numPoints = Math.floor(60000 * (electrons / maxElectrons));
     if (numPoints === 0) return new Float32Array(0);
 
     const Z = 1;
-    const rMax = n * n * 1.5;
 
     const mValues =
-      l === 1 ? [-1, 0, 1] : // 3 p orbitals
-      l === 2 ? [0] :         // single d example (dz2)
+      l === 1 ? [-1, 0, 1] :
+      l === 2 ? [0] :
       [0];
 
     const posArray = [];
@@ -109,7 +137,6 @@ function OrbitalShell({ shell, subshell, electrons, maxElectrons }) {
     for (const m of mValues) {
       let maxVal = 0;
 
-      // Precompute max value for normalization
       for (let i = 0; i < 1000; i++) {
         const r = (i / 999) * rMax;
         const R = radial(n, l, r, Z);
@@ -118,16 +145,15 @@ function OrbitalShell({ shell, subshell, electrons, maxElectrons }) {
         const phi = Math.random() * 2 * Math.PI;
 
         let Y = 0;
-        if (l === 0) {
-          Y = 1 / Math.sqrt(4 * Math.PI);
-        } else if (l === 1) {
-          if (m === 0) Y = Math.sqrt(3 / (4 * Math.PI)) * Math.cos(theta); // pz
-          if (m === 1) Y = -Math.sqrt(3 / (8 * Math.PI)) * Math.sin(theta) * Math.cos(phi); // px
-          if (m === -1) Y = -Math.sqrt(3 / (8 * Math.PI)) * Math.sin(theta) * Math.sin(phi); // py
+        if (l === 0) Y = 1 / Math.sqrt(4 * Math.PI);
+        else if (l === 1) {
+          if (m === 0) Y = Math.sqrt(3 / (4 * Math.PI)) * Math.cos(theta);
+          if (m === 1) Y = -Math.sqrt(3 / (8 * Math.PI)) * Math.sin(theta) * Math.cos(phi);
+          if (m === -1) Y = -Math.sqrt(3 / (8 * Math.PI)) * Math.sin(theta) * Math.sin(phi);
         } else if (l === 2) {
-          // d_z^2
           Y = Math.sqrt(5 / (16 * Math.PI)) * (3 * Math.cos(theta) * Math.cos(theta) - 1);
         }
+
         const ψ2 = R * R * Y * Y;
         if (ψ2 > maxVal) maxVal = ψ2;
       }
@@ -142,9 +168,8 @@ function OrbitalShell({ shell, subshell, electrons, maxElectrons }) {
         const phi = Math.random() * 2 * Math.PI;
 
         let Y = 0;
-        if (l === 0) {
-          Y = 1 / Math.sqrt(4 * Math.PI);
-        } else if (l === 1) {
+        if (l === 0) Y = 1 / Math.sqrt(4 * Math.PI);
+        else if (l === 1) {
           if (m === 0) Y = Math.sqrt(3 / (4 * Math.PI)) * Math.cos(theta);
           if (m === 1) Y = -Math.sqrt(3 / (8 * Math.PI)) * Math.sin(theta) * Math.cos(phi);
           if (m === -1) Y = -Math.sqrt(3 / (8 * Math.PI)) * Math.sin(theta) * Math.sin(phi);
@@ -163,7 +188,7 @@ function OrbitalShell({ shell, subshell, electrons, maxElectrons }) {
     }
 
     return new Float32Array(posArray);
-  }, [n, l, electrons, maxElectrons]);
+  }, [n, l, electrons, maxElectrons, rMax]);
 
   return (
     <group ref={groupRef}>
@@ -178,28 +203,28 @@ function OrbitalShell({ shell, subshell, electrons, maxElectrons }) {
         </bufferGeometry>
         <pointsMaterial
           color={color}
-          size={0.05} // Increased from 0.03 to 0.05 for better visibility
+          size={0.05}
           sizeAttenuation={true}
           transparent={true}
-          opacity={0.9} // Increased from 0.8 to 0.9 for more solid appearance
+          opacity={0.9}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />
       </points>
 
       <Text
-        position={[0, n * n * 0.5 + 0.5, 0]}
+        position={[0, rMax + 0.5, 0]} // now works!
         fontSize={0.25}
         color={color}
         anchorX="center"
         anchorY="middle"
       >
-        {shell}
-        {subshell} ({electrons}/{maxElectrons})
+        {shell}{subshell} ({electrons}/{maxElectrons})
       </Text>
     </group>
   );
 }
+
 
 // -------------------- atom 3D --------------------
 function Atom3D({ configuration, protons }) {
@@ -228,9 +253,9 @@ function Atom3D({ configuration, protons }) {
 
   return (
     <>
-      <ambientLight intensity={0.7} /> {/* Increased from 0.5 to 0.7 for better lighting */}
-      <pointLight position={[10, 10, 10]} intensity={1.5} /> {/* Increased from 1 to 1.5 */}
-      <pointLight position={[-10, -10, -10]} intensity={0.7} /> {/* Increased from 0.5 to 0.7 */}
+      <ambientLight intensity={0.7} />
+      <pointLight position={[10, 10, 10]} intensity={1.5} />
+      <pointLight position={[-10, -10, -10]} intensity={0.7} />
       <Nucleus protons={protons} neutrons={neutrons} />
       {shells.map((shell) => (
         <OrbitalShell
@@ -250,15 +275,20 @@ function Atom3D({ configuration, protons }) {
 export default function OrbitalVisualizer({ configuration, protons }) {
   if (!configuration || Object.keys(configuration).length === 0) {
     return (
-      <div className="w-full h-[600px] bg-gray-900 rounded-lg overflow-hidden flex items-center justify-center">
+      <div className="w-full h-[600px] bg-black rounded-lg overflow-hidden flex items-center justify-center">
         <p className="text-white">No electron configuration available</p>
       </div>
     );
   }
 
   return (
-    <div className="w-full h-[600px] bg-gray-900 rounded-lg overflow-hidden">
-      <Canvas camera={{ position: [0, 0, 20], fov: 45 }}> {/* Adjusted position from 15 to 20, fov from 50 to 45 */}
+    <div className="w-full h-[600px] bg-black rounded-lg overflow-hidden">
+      <Canvas
+        camera={{ position: [0, 0, 25], fov: 45 }}
+        gl={{ antialias: true }}
+        style={{ background: 'black' }}
+        onCreated={({ gl }) => gl.setClearColor(new THREE.Color('black'))}
+      >
         <Suspense fallback={null}>
           <Atom3D configuration={configuration} protons={protons} />
         </Suspense>
